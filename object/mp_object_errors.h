@@ -1,0 +1,4 @@
+#ifndef MP_OBJECT_ERRORS_H
+#define MP_OBJECT_ERRORS_H
+
+#endif // MP_OBJECT_ERRORS_H

@@ -1,0 +1,50 @@
+PROJECT(common)
+
+SET(LIBRARY_OUTPUT_PATH ${CMAKE_BINARY_DIR}/lib)
+
+#define toolkits for find open library
+IF(EXISTS $ENV{TOOLKITS} )
+MESSAGE("1. TOOLKITS is $ENV{TOOLKITS}...")
+ELSE()
+MESSAGE(FATAL_ERROR "-1. Please Define TOOLKITS!")
+ENDIF()
+
+SET(TOOLKITS_DIR $ENV{TOOLKITS})
+MESSAGE("2. TOOLKITS_DIR is ${TOOLKITS_DIR}...")
+
+SET(CMAKE_MODULE_PATH ${TOOLKITS_DIR}/share/cmake ${PROJECT_SOURCE_DIR}/toolkits/cmake)
+
+#find ace
+FIND_PACKAGE(ACE REQUIRED)
+IF(ACE_FOUND)
+MESSAGE("3. ACE_INCLUDE_DIR is ${ACE_INCLUDE_DIR}...")
+MESSAGE("4. ACE_LIBRARY is ${ACE_LIBRARY}...")
+ELSE(ACE_FOUND)
+MESSAGE(FATAL_ERROR "-2. ACE find Error!")
+ENDIF(ACE_FOUND)
+#endif define toolkits for find open library
+
+#define install directory
+IF(EXISTS $ENV{SUYUN_SDK} )
+MESSAGE("7. SDK is $ENV{SUYUN_SDK}...")
+ELSE()
+MESSAGE(FATAL_ERROR "-4. Please Define SUYUN_SDK!")
+ENDIF()
+SET(SUYUN_SDK_DIR $ENV{SUYUN_SDK})
+#endif  define install directory
+
+#define head file path
+INCLUDE_DIRECTORIES(${TOOLKITS_DIR}/include)
+#endif define head file path
+
+SET(CMAKE_CXX_FLAGS "-std=c++0x -D__STDC_CONSTANT_MACROS -fPIC")
+
+AUX_SOURCE_DIRECTORY (. PROTOCOL_SRCS)
+ 
+# shared library
+ADD_LIBRARY(common SHARED ${PROTOCOL_SRCS})
+SET_TARGET_PROPERTIES(common PROPERTIES VERSION ${VERSION} SOVERSION ${SOVERSION})
+
+INSTALL(TARGETS common
+		LIBRARY DESTINATION ${SUYUN_SDK_DIR}/lib)
+

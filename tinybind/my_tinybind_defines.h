@@ -1,0 +1,6 @@
+#ifndef MY_TINYBIND_DEFINES_H
+#define MY_TINYBIND_DEFINES_H
+
+#define TIXML_USE_STL
+
+#endif // MY_TINYBIND_DEFINES_H
