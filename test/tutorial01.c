@@ -1,14 +1,20 @@
 // tutorial01.c
-//
-// This tutorial was written by Stephen Dranger (dranger@gmail.com).
-//
 // Code based on a tutorial by Martin Bohme (boehme@inb.uni-luebeckREMOVETHIS.de)
 // Tested on Gentoo, CVS version 5/01/07 compiled with GCC 4.1.1
+// With updates from https://github.com/chelyaev/ffmpeg-tutorial
+// Updates tested on:
+// LAVC 54.59.100, LAVF 54.29.104, LSWS 2.1.101 
+// on GCC 4.7.2 in Debian February 2015
 
 // A small sample program that shows how to use libavformat and libavcodec to
 // read video from a file.
 //
-// Use the Makefile to build all examples.
+// Use
+//
+// gcc -o tutorial01 tutorial01.c -lavformat -lavcodec -lswscale -lz
+//
+// to build (assuming libavformat and libavcodec are correctly installed
+// your system).
 //
 // Run using
 //
@@ -20,8 +26,14 @@
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libswscale/swscale.h>
-#include <time.h>
+
 #include <stdio.h>
+
+// compatibility with newer API
+#if LIBAVCODEC_VERSION_INT < AV_VERSION_INT(55,28,1)
+#define av_frame_alloc avcodec_alloc_frame
+#define av_frame_free avcodec_free_frame
+#endif
 
 void SaveFrame(AVFrame *pFrame, int width, int height, int iFrame) {
   FILE *pFile;
@@ -46,20 +58,20 @@ void SaveFrame(AVFrame *pFrame, int width, int height, int iFrame) {
 }
 
 int main(int argc, char *argv[]) {
-  AVFormatContext *pFormatCtx = NULL;
-  int             i, videoStream;
-  AVCodecContext  *pCodecCtx = NULL;
-  AVCodec         *pCodec = NULL;
-  AVFrame         *pFrame = NULL; 
-  AVFrame         *pFrameRGB = NULL;
-  AVPacket        packet;
-  int             frameFinished;
-  int             numBytes;
-  uint8_t         *buffer = NULL;
+  // Initalizing these to NULL prevents segfaults!
+  AVFormatContext   *pFormatCtx = NULL;
+  int               i, videoStream;
+  AVCodecContext    *pCodecCtxOrig = NULL;
+  AVCodecContext    *pCodecCtx = NULL;
+  AVCodec           *pCodec = NULL;
+  AVFrame           *pFrame = NULL;
+  AVFrame           *pFrameRGB = NULL;
+  AVPacket          packet;
+  int               frameFinished;
+  int               numBytes;
+  uint8_t           *buffer = NULL;
+  struct SwsContext *sws_ctx = NULL;
 
-  AVDictionary    *optionsDict = NULL;
-  struct SwsContext      *sws_ctx = NULL;
-  
   if(argc < 2) {
     printf("Please provide a movie file\n");
     return -1;
@@ -89,16 +101,22 @@ int main(int argc, char *argv[]) {
     return -1; // Didn't find a video stream
   
   // Get a pointer to the codec context for the video stream
-  pCodecCtx=pFormatCtx->streams[videoStream]->codec;
-  
+  pCodecCtxOrig=pFormatCtx->streams[videoStream]->codec;
   // Find the decoder for the video stream
-  pCodec=avcodec_find_decoder(pCodecCtx->codec_id);
+  pCodec=avcodec_find_decoder(pCodecCtxOrig->codec_id);
   if(pCodec==NULL) {
     fprintf(stderr, "Unsupported codec!\n");
     return -1; // Codec not found
   }
+  // Copy context
+  pCodecCtx = avcodec_alloc_context3(pCodec);
+  if(avcodec_copy_context(pCodecCtx, pCodecCtxOrig) != 0) {
+    fprintf(stderr, "Couldn't copy codec context");
+    return -1; // Error copying codec context
+  }
+
   // Open codec
-  if(avcodec_open2(pCodecCtx, pCodec, &optionsDict)<0)
+  if(avcodec_open2(pCodecCtx, pCodec, NULL)<0)
     return -1; // Could not open codec
   
   // Allocate video frame
@@ -108,26 +126,11 @@ int main(int argc, char *argv[]) {
   pFrameRGB=av_frame_alloc();
   if(pFrameRGB==NULL)
     return -1;
-  
+
   // Determine required buffer size and allocate buffer
   numBytes=avpicture_get_size(PIX_FMT_RGB24, pCodecCtx->width,
 			      pCodecCtx->height);
   buffer=(uint8_t *)av_malloc(numBytes*sizeof(uint8_t));
-
-  sws_ctx =
-    sws_getContext
-    (
-        pCodecCtx->width,
-        pCodecCtx->height,
-        pCodecCtx->pix_fmt,
-        pCodecCtx->width,
-        pCodecCtx->height,
-        PIX_FMT_RGB24,
-        SWS_BILINEAR,
-        NULL,
-        NULL,
-        NULL
-    );
   
   // Assign appropriate parts of buffer to image planes in pFrameRGB
   // Note that pFrameRGB is an AVFrame, but AVFrame is a superset
@@ -135,64 +138,56 @@ int main(int argc, char *argv[]) {
   avpicture_fill((AVPicture *)pFrameRGB, buffer, PIX_FMT_RGB24,
 		 pCodecCtx->width, pCodecCtx->height);
   
+  // initialize SWS context for software scaling
+  sws_ctx = sws_getContext(pCodecCtx->width,
+			   pCodecCtx->height,
+			   pCodecCtx->pix_fmt,
+			   pCodecCtx->width,
+			   pCodecCtx->height,
+			   PIX_FMT_RGB24,
+			   SWS_BILINEAR,
+			   NULL,
+			   NULL,
+			   NULL
+			   );
+
   // Read frames and save first five frames to disk
   i=0;
-  static struct timeval last;
-  static int count = 0;
-  gettimeofday(&last, NULL);
   while(av_read_frame(pFormatCtx, &packet)>=0) {
     // Is this a packet from the video stream?
     if(packet.stream_index==videoStream) {
       // Decode video frame
-      avcodec_decode_video2(pCodecCtx, pFrame, &frameFinished, 
-			   &packet);
-
+      avcodec_decode_video2(pCodecCtx, pFrame, &frameFinished, &packet);
+      
       // Did we get a video frame?
       if(frameFinished) {
-    #if 0
 	// Convert the image from its native format to RGB
-        sws_scale
-        (
-            sws_ctx,
-            (uint8_t const * const *)pFrame->data,
-            pFrame->linesize,
-            0,
-            pCodecCtx->height,
-            pFrameRGB->data,
-            pFrameRGB->linesize
-        );
+	sws_scale(sws_ctx, (uint8_t const * const *)pFrame->data,
+		  pFrame->linesize, 0, pCodecCtx->height,
+		  pFrameRGB->data, pFrameRGB->linesize);
 	
 	// Save the frame to disk
 	if(++i<=5)
 	  SaveFrame(pFrameRGB, pCodecCtx->width, pCodecCtx->height, 
-		    i);   
-      }
-      #endif
-      ++count;
-      struct timeval now;
-      gettimeofday(&now, NULL);
-      int diff = now.tv_sec - last.tv_sec;
-      if(diff > 5){
-        printf("fps :%d \n",count/diff);
-        count = 0;
-        last = now;
+		    i);
       }
     }
     
     // Free the packet that was allocated by av_read_frame
     av_free_packet(&packet);
   }
-  }
+  
   // Free the RGB image
   av_free(buffer);
-  av_free(pFrameRGB);
+  av_frame_free(&pFrameRGB);
   
   // Free the YUV frame
-  av_free(pFrame);
+  av_frame_free(&pFrame);
   
-  // Close the codec
+  // Close the codecs
   avcodec_close(pCodecCtx);
-  
+  avcodec_close(pCodecCtxOrig);
+
   // Close the video file
   avformat_close_input(&pFormatCtx);
   

@@ -1,19 +1,24 @@
 // tutorial02.c
 // A pedagogical video player that will stream through every video frame as fast as it can.
 //
-// This tutorial was written by Stephen Dranger (dranger@gmail.com).
-//
 // Code based on FFplay, Copyright (c) 2003 Fabrice Bellard, 
 // and a tutorial by Martin Bohme (boehme@inb.uni-luebeckREMOVETHIS.de)
 // Tested on Gentoo, CVS version 5/01/07 compiled with GCC 4.1.1
+// With updates from https://github.com/chelyaev/ffmpeg-tutorial
+// Updates tested on:
+// LAVC 54.59.100, LAVF 54.29.104, LSWS 2.1.101, SDL 1.2.15
+// on GCC 4.7.2 in Debian February 2015
 //
-// Use the Makefile to build all examples.
+// Use
+// 
+// gcc -o tutorial02 tutorial02.c -lavformat -lavcodec -lswscale -lz -lm `sdl-config --cflags --libs`
+// to build (assuming libavformat and libavcodec are correctly installed, 
+// and assuming you have sdl-config. Please refer to SDL docs for your installation.)
 //
 // Run using
 // tutorial02 myvideofile.mpg
 //
 // to play the video stream on your screen.
-
 
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -21,28 +26,33 @@
 
 #include <SDL.h>
 #include <SDL_thread.h>
-#include <SDL/SDL.h>
+
 #ifdef __MINGW32__
 #undef main /* Prevents SDL from overriding main() */
 #endif
 
 #include <stdio.h>
 
+// compatibility with newer API
+#if LIBAVCODEC_VERSION_INT < AV_VERSION_INT(55,28,1)
+#define av_frame_alloc avcodec_alloc_frame
+#define av_frame_free avcodec_free_frame
+#endif
+
 int main(int argc, char *argv[]) {
   AVFormatContext *pFormatCtx = NULL;
   int             i, videoStream;
+  AVCodecContext  *pCodecCtxOrig = NULL;
   AVCodecContext  *pCodecCtx = NULL;
   AVCodec         *pCodec = NULL;
-  AVFrame         *pFrame = NULL; 
+  AVFrame         *pFrame = NULL;
   AVPacket        packet;
   int             frameFinished;
-  //float           aspect_ratio;
-
-  AVDictionary    *optionsDict = NULL;
+  float           aspect_ratio;
   struct SwsContext *sws_ctx = NULL;
 
-  SDL_Overlay     *bmp = NULL;
-  SDL_Surface     *screen = NULL;
+  SDL_Overlay     *bmp;
+  SDL_Surface     *screen;
   SDL_Rect        rect;
   SDL_Event       event;
 
@@ -80,17 +90,23 @@ int main(int argc, char *argv[]) {
     return -1; // Didn't find a video stream
   
   // Get a pointer to the codec context for the video stream
-  pCodecCtx=pFormatCtx->streams[videoStream]->codec;
-  
+  pCodecCtxOrig=pFormatCtx->streams[videoStream]->codec;
   // Find the decoder for the video stream
-  pCodec=avcodec_find_decoder(pCodecCtx->codec_id);
+  pCodec=avcodec_find_decoder(pCodecCtxOrig->codec_id);
   if(pCodec==NULL) {
     fprintf(stderr, "Unsupported codec!\n");
     return -1; // Codec not found
   }
-  
+
+  // Copy context
+  pCodecCtx = avcodec_alloc_context3(pCodec);
+  if(avcodec_copy_context(pCodecCtx, pCodecCtxOrig) != 0) {
+    fprintf(stderr, "Couldn't copy codec context");
+    return -1; // Error copying codec context
+  }
+
   // Open codec
-  if(avcodec_open2(pCodecCtx, pCodec, &optionsDict)<0)
+  if(avcodec_open2(pCodecCtx, pCodec, NULL)<0)
     return -1; // Could not open codec
   
   // Allocate video frame
@@ -112,21 +128,21 @@ int main(int argc, char *argv[]) {
 				 pCodecCtx->height,
 				 SDL_YV12_OVERLAY,
 				 screen);
-  
-  sws_ctx =
-    sws_getContext
-    (
-        pCodecCtx->width,
-        pCodecCtx->height,
-        pCodecCtx->pix_fmt,
-        pCodecCtx->width,
-        pCodecCtx->height,
-        PIX_FMT_YUV420P,
-        SWS_BILINEAR,
-        NULL,
-        NULL,
-        NULL
-    );
+
+  // initialize SWS context for software scaling
+  sws_ctx = sws_getContext(pCodecCtx->width,
+			   pCodecCtx->height,
+			   pCodecCtx->pix_fmt,
+			   pCodecCtx->width,
+			   pCodecCtx->height,
+			   PIX_FMT_YUV420P,
+			   SWS_BILINEAR,
+			   NULL,
+			   NULL,
+			   NULL
+			   );
+
+
 
   // Read frames and save first five frames to disk
   i=0;
@@ -134,8 +150,7 @@ int main(int argc, char *argv[]) {
     // Is this a packet from the video stream?
     if(packet.stream_index==videoStream) {
       // Decode video frame
-      avcodec_decode_video2(pCodecCtx, pFrame, &frameFinished, 
-			   &packet);
+      avcodec_decode_video2(pCodecCtx, pFrame, &frameFinished, &packet);
       
       // Did we get a video frame?
       if(frameFinished) {
@@ -151,17 +166,10 @@ int main(int argc, char *argv[]) {
 	pict.linesize[2] = bmp->pitches[1];
 
 	// Convert the image into YUV format that SDL uses
-    sws_scale
-    (
-        sws_ctx, 
-        (uint8_t const * const *)pFrame->data, 
-        pFrame->linesize, 
-        0,
-        pCodecCtx->height,
-        pict.data,
-        pict.linesize
-    );
-	
+	sws_scale(sws_ctx, (uint8_t const * const *)pFrame->data,
+		  pFrame->linesize, 0, pCodecCtx->height,
+		  pict.data, pict.linesize);
+
 	SDL_UnlockYUVOverlay(bmp);
 	
 	rect.x = 0;
@@ -188,10 +196,11 @@ int main(int argc, char *argv[]) {
   }
   
   // Free the YUV frame
-  av_free(pFrame);
+  av_frame_free(&pFrame);
   
   // Close the codec
   avcodec_close(pCodecCtx);
+  avcodec_close(pCodecCtxOrig);
   
   // Close the video file
   avformat_close_input(&pFormatCtx);
